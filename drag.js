@@ -1,7 +1,7 @@
 const canvasViewport =
-   document.getElementById("canvas-viewport");
+   document.querySelector(".canvas-viewport");
 const canvas =
-   document.getElementById("canvas");
+   document.querySelector(".canvas");
 const detailsPane =
    document.querySelector(".details-pane");
 const sidebar =

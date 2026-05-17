@@ -1,159 +1,287 @@
-const canvasViewport = document.getElementById("canvas-viewport");
-const canvas = document.getElementById("canvas");
-const sidebar = document.querySelector(".sidebar");
-const sidebarToggle = document.querySelector(".sidebar-toggle");
-const detailsPane = document.querySelector(".details-pane");
-
-
-
-
-sidebarToggle.addEventListener("click", () => {
-  sidebar.classList.toggle("collapsed");
-});
-
-
-
-
-const offset = {
-  x: window.innerWidth / 2,
-  y: window.innerHeight / 2
-};
-
-  
-const applyOffset = () => {
-  canvas.style.transform = `translate(${offset.x}px, ${offset.y}px)`;
-  canvasViewport.style.backgroundPosition = `${offset.x}px ${offset.y}px`;
-}
-
-applyOffset();
-
-let recentMoves = [];
-
-
-const computeVelocity = () => {
-  if (recentMoves.length < 2) return {x: 0, y: 0};
-  const first = recentMoves[0];
-  const last = recentMoves[recentMoves.length - 1];
-  const dt = last.t - first.t;
-  if (dt === 0) return {x: 0, y: 0};
-  return {
-    x: (last.x - first.x) / dt,
-    y: (last.y - first.y) / dt
-  };
+const getSize = node => {
+   const {width, height} =
+      node.getBoundingClientRect();
+   return {width, height};
 };
 
 
-let momentumVelocity = {x: 0, y: 0};
-let momentumFrameId = null;
-
-const FRICTION = 0.8;
-const MIN_VELOCITY = 0.01;
-
-
-function momentumStep() {
-  // Advance position by velocity. At ~60fps, ~16ms per frame.
-  offset.x += momentumVelocity.x * 16;
-  offset.y += momentumVelocity.y * 16;
-  applyOffset();
-
-  momentumVelocity.x *= FRICTION;
-  momentumVelocity.y *= FRICTION;
-
-  const speed = Math.hypot(momentumVelocity.x, momentumVelocity.y);
-  if (speed < MIN_VELOCITY) {
-    momentumFrameId = null;
-    return;
-  }
-
-  momentumFrameId = requestAnimationFrame(momentumStep);
-}
-
-
-let panning = false,
-    panStart,
-    offsetStart;
-
-
-canvasViewport.addEventListener("pointerdown", e => {
-  if (momentumFrameId !== null) {
-    cancelAnimationFrame(momentumFrameId);
-    momentumFrameId = null;
-  }
-  recentMoves = [];
-
-  panning = true;
-  panStart = {x: e.clientX, y: e.clientY};
-  offsetStart = {...offset};
-  canvasViewport.setPointerCapture(e.pointerId);
+const getOffsetBounds = (
+         viewportSize,
+         nodeSize) => ({
+   minX: 0,
+   maxX: viewportSize.width
+          - nodeSize.width,
+   minY: 0,
+   maxY: viewportSize.height
+          - nodeSize.height
 });
 
 
-canvasViewport.addEventListener("pointermove", e => {
-  if (!panning) return;
-  offset.x = offsetStart.x + (e.clientX - panStart.x);
-  offset.y = offsetStart.y + (e.clientY - panStart.y);
-  applyOffset();
+const clamp = (value, min, max) =>
+   Math.min(max, Math.max(min, value));
 
-  const now = performance.now();
-  recentMoves.push({ t: now, x: e.clientX, y: e.clientY });
-  recentMoves = recentMoves.filter(m => now - m.t < 100);
+
+const identity = x => x;
+
+
+const clampOffset =
+      ({minX, maxX, minY, maxY}) =>
+      ({x, y}) => ({
+   x: clamp(x, minX, maxX),
+   y: clamp(y, minY, maxY)
 });
 
 
-canvasViewport.addEventListener("pointerup", e => {
-  panning = false;
-  canvasViewport.releasePointerCapture(e.pointerId);
+const computeVelocity = recentMoves => {
+   if (recentMoves.length < 2) {
+      return {dx: 0, dy: 0};
+   }
 
-  momentumVelocity = computeVelocity();
-  const speed = Math.hypot(momentumVelocity.x, momentumVelocity.y);
-  if (speed > MIN_VELOCITY) {
-    momentumFrameId = requestAnimationFrame(momentumStep);
-  }
-});
+   const first = recentMoves.at(0);
+   const last = recentMoves.at(-1);
 
+   const dt = last.t - first.t;
 
+   if (dt === 0) {
+      return {dx: 0, dy: 0};
+   }
 
-
-const paneOffset = {x: 0, y: 0};
-
-
-const applyPaneOffset = () => {
-  detailsPane.style.transform = `translate(${paneOffset.x}px, ${paneOffset.y}px)`;
-}
-
-
-let paneDragging = false,
-    paneRect,
-    paneDragStart,
-    paneOffsetStart;
+   return {
+      dx: (last.x - first.x) / dt,
+      dy: (last.y - first.y) / dt
+   };
+};
 
 
-detailsPane.addEventListener("pointerdown", e => {
-  paneDragging = true;
-  paneRect = detailsPane.getBoundingClientRect();
-  paneDragStart = {x: e.clientX, y: e.clientY};
-  paneOffsetStart = {...paneOffset};
-  detailsPane.setPointerCapture(e.pointerId);
-});
 
 
-const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
+const makeMotionController = (
+         initialOffset,
+         renderOffset,
+         transformOffset = identity) => {
+
+   const offset = {x: 0, y: 0};
+
+   const writeOffset = ({x, y}) => {
+      offset.x = x;
+      offset.y = y;
+   };
+
+   const setOffset = newOffset => {
+      writeOffset(transformOffset(newOffset));
+      renderOffset(offset);
+   };
+
+   const applyDelta = ({dx, dy}) => {
+      setOffset({
+         x: offset.x + dx,
+         y: offset.y + dy
+      });
+   };
+
+   setOffset(initialOffset);
+
+   return {
+      getOffset: () => ({...offset}),
+      setOffset,
+      applyDelta
+   };
+};
 
 
-detailsPane.addEventListener("pointermove", e => {
-  if (!paneDragging) return;
+const startMomentum = ({
+         controller,
+         velocity,
+         halfLife = 150,
+         minVelocity = 0.01,
+         setFrameId}) => {
 
-  const rawX = paneOffsetStart.x + (e.clientX - paneDragStart.x);
-  const rawY = paneOffsetStart.y + (e.clientY - paneDragStart.y);
+   let previous =
+      document.timeline.currentTime;
+   let {dx, dy} = velocity;
 
-  paneOffset.x = clamp(rawX, -(window.innerWidth - paneRect.width), 0);
-  paneOffset.y = clamp(rawY, 0, window.innerHeight - paneRect.height);
+   const step = timestamp => {
+      const timeDelta = timestamp - previous;
 
-  applyPaneOffset();
-});
+      controller.applyDelta({
+         dx: dx * timeDelta,
+         dy: dy * timeDelta
+      });
+
+      const decay =
+         0.5 ** (timeDelta / halfLife);
+
+      dx *= decay;
+      dy *= decay;
+      previous = timestamp;
+
+      if (Math.hypot(dx, dy) < minVelocity) {
+         setFrameId(null);
+         return;
+      }
+
+      setFrameId(requestAnimationFrame(step));
+   };
+
+   if (Math.hypot(dx, dy) > minVelocity) {
+      setFrameId(requestAnimationFrame(step));
+   }
+};
 
 
-detailsPane.addEventListener("pointerup", e => {
-  paneDragging = false;
-  detailsPane.releasePointerCapture(e.pointerId);
-});
+const bindPointerDrag = (
+      element,
+      controller,
+      halfLife) => {
+
+   let dragging = false,
+       dragStart,
+       offsetStart,
+       recentMoves,
+       momentumFrameId = null;
+
+   element.addEventListener("pointerdown",
+      event => {
+         if (momentumFrameId !== null) {
+            cancelAnimationFrame(
+               momentumFrameId);
+            momentumFrameId = null;
+         }
+
+         recentMoves = [];
+         dragging = true;
+         dragStart = {
+            x: event.clientX,
+            y: event.clientY
+         };
+         offsetStart = controller.getOffset();
+
+         element.setPointerCapture(
+            event.pointerId);
+      });
+
+   element.addEventListener("pointermove",
+      event => {
+         if (!dragging) {
+            return;
+         }
+
+         controller.setOffset({
+            x: offsetStart.x
+                + event.clientX
+                - dragStart.x,
+            y: offsetStart.y
+                + event.clientY
+                - dragStart.y
+         });
+
+         const now = performance.now();
+         recentMoves.push({
+            t: now,
+            x: event.clientX,
+            y: event.clientY
+         });
+         recentMoves =
+            recentMoves.filter(
+               move =>
+                  now - move.t < 100);
+      });
+
+   element.addEventListener("pointerup",
+      event => {
+         dragging = false;
+         element.releasePointerCapture(
+            event.pointerId);
+
+         startMomentum({
+            controller,
+            velocity: computeVelocity(
+               recentMoves),
+            halfLife,
+            setFrameId: (id) => {
+               momentumFrameId = id;
+            }
+         });
+      });
+};
+
+
+
+
+const canvas = (() => {
+   const canvasNode =
+      document.querySelector(".canvas");
+   const viewportNode =
+      document.querySelector(
+         ".canvas-viewport");
+
+   const viewportSize = getSize(viewportNode);
+
+   const initialOffset = {
+      x: viewportSize.width / 2,
+      y: viewportSize.height / 2
+   };
+
+   const renderOffset = ({x, y}) => {
+      canvasNode.style.transform =
+         `translate(${x}px, ${y}px)`;
+      viewportNode.style.backgroundPosition =
+         `${x}px ${y}px`;
+   };
+
+   const controller = makeMotionController(
+      initialOffset,
+      renderOffset);
+
+   bindPointerDrag(viewportNode, controller, 50);
+})();
+
+
+const detailsPane = (() => {
+   const paneNode =
+      document.querySelector(".details-pane");
+   const viewportNode =
+      document.getElementById("viewport");
+
+   const viewportSize = getSize(viewportNode);
+   const paneSize = getSize(paneNode);
+
+   const initialOffset = {
+      x: viewportSize.width - paneSize.width,
+      y: 0
+   };
+
+   const renderOffset = ({x, y}) => {
+      paneNode.style.transform =
+         `translate(${x}px, ${y}px)`;
+   };
+
+   const offsetBounds = getOffsetBounds(
+      viewportSize,
+      paneSize);
+
+   const transformOffset =
+      clampOffset(offsetBounds);
+
+   const controller = makeMotionController(
+      initialOffset,
+      renderOffset,
+      transformOffset);
+
+   bindPointerDrag(paneNode, controller, 500);
+})();
+
+
+const sidebar = (() => {
+   const sidebarNode =
+      document.querySelector(".sidebar");
+   const sidebarToggleNode =
+      document.querySelector(
+         ".sidebar-toggle");
+
+   sidebarToggleNode.addEventListener("click",
+      () => {
+         sidebarNode.classList.toggle(
+            "collapsed");
+      });
+})();

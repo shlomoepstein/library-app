@@ -53,32 +53,6 @@ const computeVelocity = recentMoves => {
 };
 
 
-const makeMotionSampler = () => {
-   let samples = [];
-
-   return {
-      sample: ({x, y}) => {
-         const now = performance.now();
-
-         samples.push({
-            t: now,
-            x,
-            y
-         });
-
-         samples = samples.filter(
-            sample =>
-               now - sample.t < 100);
-      },
-      getVelocity: () =>
-         computeVelocity(samples),
-      reset: () => {
-         samples = [];
-      }
-   };
-};
-
-
 
 
 const makeMotionController = (
@@ -115,13 +89,13 @@ const makeMotionController = (
 };
 
 
-const makeMomentum = ({
+const startMomentum = ({
          controller,
          velocity,
          halfLife = 150,
          minVelocity = 0.01}) => {
 
-   let previous,
+   let previous = document.timeline.currentTime,
        {dx, dy} = velocity,
        frameId = null;
 
@@ -148,16 +122,11 @@ const makeMomentum = ({
       frameId = requestAnimationFrame(step);
    };
 
+   if (Math.hypot(dx, dy) > minVelocity) {
+      frameId = requestAnimationFrame(step);
+   }
+
    return {
-      start: () => {
-         if (Math.hypot(dx, dy)
-              > minVelocity) {
-            previous =
-                document.timeline.currentTime;
-            frameId =
-               requestAnimationFrame(step);
-         }
-      },
       cancel: () => {
          if (frameId !== null) {
             cancelAnimationFrame(frameId);
@@ -168,28 +137,31 @@ const makeMomentum = ({
 };
 
 
-const onDrag = (
-      element, {
-         onDragStart,
-         onDragMove,
-         onDragEnd
-      }) => {
+const bindPointerDrag = (
+      element,
+      controller,
+      onRelease) => {
 
    let dragging = false,
-       dragStart;
+       dragStart,
+       offsetStart,
+       recentMoves,
+       onReleaseHandle;
 
    element.addEventListener("pointerdown",
       event => {
-         dragging = true;
-         element.setPointerCapture(
-            event.pointerId);
+         onReleaseHandle?.cancel();
 
+         recentMoves = [];
+         dragging = true;
          dragStart = {
             x: event.clientX,
             y: event.clientY
          };
+         offsetStart = controller.getOffset();
 
-         onDragStart?.();
+         element.setPointerCapture(
+            event.pointerId);
       });
 
    element.addEventListener("pointermove",
@@ -198,12 +170,25 @@ const onDrag = (
             return;
          }
 
-         onDragMove?.({
-            x: event.clientX,
-            y: event.clientY,
-            dx: event.clientX - dragStart.x,
-            dy: event.clientY - dragStart.y
+         controller.setOffset({
+            x: offsetStart.x
+                + event.clientX
+                - dragStart.x,
+            y: offsetStart.y
+                + event.clientY
+                - dragStart.y
          });
+
+         const now = performance.now();
+         recentMoves.push({
+            t: now,
+            x: event.clientX,
+            y: event.clientY
+         });
+         recentMoves =
+            recentMoves.filter(
+               move =>
+                  now - move.t < 100);
       });
 
    element.addEventListener("pointerup",
@@ -212,54 +197,18 @@ const onDrag = (
          element.releasePointerCapture(
             event.pointerId);
 
-         onDragEnd?.();
+         const velocity = computeVelocity(
+            recentMoves);
+
+         onReleaseHandle =
+            onRelease?.(controller, velocity);
       });
 };
 
 
-const makeDraggable = (
-      element,
-      controller,
-      makeMomentum) => {
-
-   const motion = makeMotionSampler();
-   let   momentum,
-         offsetStart;
-
-   const onDragStart = () => {
-      momentum?.cancel();
-      motion.reset();
-      offsetStart = controller.getOffset();
-   };
-
-   const onDragMove = ({x, y, dx, dy}) => {
-      controller.setOffset({
-         x: offsetStart.x + dx,
-         y: offsetStart.y + dy
-      });
-      motion.sample({x, y});
-   };
-
-   const onDragEnd = () => {
-      momentum = makeMomentum?.(
-         controller,
-         motion.getVelocity());
-      momentum?.start();
-   };
-
-   onDrag(element, {
-      onDragStart,
-      onDragMove,
-      onDragEnd
-   });
-};
-
-
-
-
-const momentum = halfLife =>
+const makeOnRelease = halfLife =>
    (controller, velocity) =>
-      makeMomentum({
+      startMomentum({
          controller,
          velocity,
          halfLife
@@ -293,7 +242,7 @@ const canvas = (() => {
       initialOffset,
       renderOffset);
 
-   makeDraggable(viewportNode, controller, momentum(50));
+   bindPointerDrag(viewportNode, controller, makeOnRelease(50));
 })();
 
 
@@ -328,7 +277,7 @@ const detailsPane = (() => {
       renderOffset,
       transformOffset);
 
-   makeDraggable(paneNode, controller, momentum(500));
+   bindPointerDrag(paneNode, controller, makeOnRelease(500));
 })();
 
 
